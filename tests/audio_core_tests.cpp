@@ -373,7 +373,34 @@ void discontinuity() {
     std::printf("DISCONTINUITY flags=%llu matching_output_with_retained_queue_src_drift\n",
         static_cast<unsigned long long>(core.statistics().discontinuities));
 }
+void splice_continuity() {
+    constexpr unsigned block = 144;
+    audio::Transport core(48000, 48000, 1, 2577, 576, block);
+    std::array<float, block> packet{}, out{};
+    unsigned frame = 0;
+    auto push = [&] {
+        for (auto& sample : packet) sample = static_cast<float>(0.6 * std::cos(2 * pi * 625 * frame++ / 48000));
+        return core.push(packet);
+    };
+    for (int i = 0; i < 4; ++i) CHECK(push());
+    CHECK(core.render(out) == block);
+    for (int i = 0; i < 16; ++i) { CHECK(push()); CHECK(core.render(out) == block); }
+    float previous = out.back(), peak_step = 0;
+    for (int i = 0; i < 5; ++i) CHECK(push() == (i < 4));
+    for (int i = 0; i < 4; ++i) {
+        if (i) CHECK(push());
+        CHECK(core.render(out) == block);
+        for (float sample : out) {
+            peak_step = std::max(peak_step, std::abs(sample - previous));
+            previous = sample;
+        }
+    }
+    // The unbridged 12 ms time jump in this tone produces a step of 0.95.
+    CHECK(core.statistics().dropped_frames == 576);
+    CHECK(peak_step < 0.07F);
+}
 void backlog() {
+    splice_continuity();
     constexpr unsigned block=144, target=576, channels=2;
     std::array<float,6000*channels> input{};
     for(std::size_t i=0;i<input.size()/channels;++i) {
