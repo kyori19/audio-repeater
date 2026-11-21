@@ -5,7 +5,14 @@ foreach(entry IN LISTS checksums)
   string(SUBSTRING "${entry}" 66 -1 filename)
   file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/libsamplerate/${filename}" actual)
   if(NOT actual STREQUAL expected)
-    message(FATAL_ERROR "libsamplerate checksum mismatch: ${filename}")
+    # Submodules use their own Git attributes. A Windows checkout may convert
+    # the pinned text sources to CRLF. Hash the LF representation in that case.
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/libsamplerate/${filename}" source_text)
+    string(REPLACE "\r\n" "\n" source_text "${source_text}")
+    string(SHA256 normalized "${source_text}")
+    if(NOT normalized STREQUAL expected)
+      message(FATAL_ERROR "libsamplerate checksum mismatch: ${filename}")
+    endif()
   endif()
 endforeach()
 # Directory scope keeps vendor CTest settings out of the parent project.
