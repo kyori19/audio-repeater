@@ -74,6 +74,16 @@ std::wstring diagnostics(const audio::Snapshot& s) {
         << L" render_misses=" << s.metrics.render_misses << L" last_render_hr=" << hex(s.metrics.render_hr)
         << L"\nsessions=" << s.sessions << L" recoveries=" << s.recoveries
         << L" last_recovery=" << s.recovery_stage << L" recovery_hr=" << hex(s.recovery_hr) << L"\n";
+    const auto timing = [&](const wchar_t* label, const audio::RenderWindow& w) {
+        if (w.seconds == 0) return;
+        out << L"\n" << label << L": input_fps=" << w.input_fps << L" output_fps=" << w.output_fps
+            << L" window_s=" << w.seconds << L" dropped_frames=" << w.drops << L" render_events=" << w.events
+            << L" render_gap_ms_avg/max=" << w.mean_gap_ms << L"/" << w.max_gap_ms
+            << L" render_work_ms_avg/max=" << w.mean_work_ms << L"/" << w.max_work_ms
+            << L" slow_windows=" << w.slow_windows << L"\n";
+    };
+    timing(L"Latest measurement", s.render_window);
+    timing(L"Last sustained slow render before recovery", s.last_slow_render);
     return out.str();
 }
 int usage() {

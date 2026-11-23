@@ -15,7 +15,7 @@ std::size_t select_queue_target(unsigned input_rate, std::size_t minimum_frames,
 }
 void Worker::start() {
     stop();
-    { std::lock_guard lock(setup_mutex_); setup_ = {}; }
+    { std::lock_guard lock(setup_mutex_); setup_ = {}; render_window_ = {}; last_slow_render_ = {}; }
     sessions_ = 0; recoveries_ = 0; prior_capture_misses_ = 0; prior_render_misses_ = 0;
     last_capture_hr_ = 0; last_render_hr_ = 0; recovery_hr_ = 0; recovery_stage_ = "none";
     publish({}); error_ = 0; stage_ = "initialize"; state_ = State::starting;
@@ -43,7 +43,10 @@ void Worker::publish(Metrics m) noexcept {
 Snapshot Worker::snapshot() const {
     Snapshot s;
     s.state = state_.load(); s.error = error_.load(); s.stage = stage_.load();
-    { std::lock_guard lock(setup_mutex_); s.setup = setup_; }
+    {
+        std::lock_guard lock(setup_mutex_);
+        s.setup = setup_; s.render_window = render_window_; s.last_slow_render = last_slow_render_;
+    }
     s.metrics.core = {input_, output_, consumed_, generated_, underflows_, overflows_,
                       resyncs_, dropped_, silent_, startup_, discontinuities_, src_errors_};
     s.metrics.timestamp_errors = timestamps_; s.metrics.capture_silent_frames = capture_silent_;
@@ -60,6 +63,7 @@ void Worker::run(std::stop_token token) noexcept {
     const char* stage = "initialize";
     while (!token.stop_requested()) {
         bool timed_out = false;
+        std::optional<RenderWindow> slow_render;
         result = 0; stage = "initialize";
         try {
             session = factory_();
@@ -69,7 +73,7 @@ void Worker::run(std::stop_token token) noexcept {
             { std::lock_guard lock(setup_mutex_); setup_ = setup; }
             if (result >= 0 && !token.stop_requested()) {
                 stage = "start capture"; result = session->start_capture();
-                bool rendered = false;
+                std::optional<RenderMonitor> monitor;
                 auto last_capture = std::chrono::steady_clock::now();
                 auto last_render = last_capture;
                 const auto startup = last_capture;
@@ -80,8 +84,8 @@ void Worker::run(std::stop_token token) noexcept {
                     if (wake == Wake::failed) { result = static_cast<std::int32_t>(0x80004005U); break; }
                     const auto now = std::chrono::steady_clock::now();
                     if (now - last_capture > std::chrono::seconds(2) ||
-                        (rendered && now - last_render > std::chrono::seconds(2)) ||
-                        (!rendered && now - startup > std::chrono::seconds(2))) {
+                        (monitor && now - last_render > std::chrono::seconds(2)) ||
+                        (!monitor && now - startup > std::chrono::seconds(2))) {
                         stage = "audio event/prefill timeout";
                         result = static_cast<std::int32_t>(0x800705B4U); timed_out = true; break;
                     }
@@ -90,18 +94,33 @@ void Worker::run(std::stop_token token) noexcept {
                         stage = "capture"; result = session->capture(token);
                         if (result == 0) last_capture = now;
                         if (result < 0 || token.stop_requested()) break;
-                        if (!rendered && session->ready()) {
+                        if (!monitor && session->ready()) {
                             stage = "start render"; result = session->start_render();
                             if (result < 0) break;
                             last_render = now;
-                            rendered = true; state_ = State::running;
+                            monitor.emplace(std::chrono::steady_clock::now(), session->metrics().core);
+                            state_ = State::running;
                         }
-                    } else if (rendered && wake == Wake::render) {
+                    } else if (monitor && wake == Wake::render) {
                         stage = "render"; result = session->render();
+                        monitor->render_event(now, std::chrono::steady_clock::now());
                         if (result == 0) last_render = now;
                     }
                     if (result < 0) break;
-                    publish(session->metrics());
+                    const auto metrics = session->metrics();
+                    publish(metrics);
+                    if (!monitor) continue;
+                    const auto sample = monitor->sample(std::chrono::steady_clock::now(), metrics.core,
+                                                        setup.input.format.rate, setup.output.format.rate);
+                    if (!sample) continue;
+                    // The audio thread may skip a UI refresh while a snapshot is being read.
+                    std::unique_lock lock(setup_mutex_, std::try_to_lock);
+                    if (lock.owns_lock()) render_window_ = *sample;
+                    if (sample->slow_windows >= 2) {
+                        slow_render = sample;
+                        stage = "sustained slow render";
+                        break;
+                    }
                 }
             }
         } catch (...) { result = static_cast<std::int32_t>(0x80004005U); }
@@ -111,13 +130,17 @@ void Worker::run(std::stop_token token) noexcept {
         }
         const bool unhealthy_buffer = result == static_cast<std::int32_t>(0x88890018U) &&
             (std::string_view(stage) == "capture" || std::string_view(stage) == "render");
-        if (token.stop_requested() || (!session_invalidated(result) && !timed_out && !unhealthy_buffer)) break;
+        if (token.stop_requested() || (!session_invalidated(result) && !timed_out && !unhealthy_buffer && !slow_render)) break;
         prior_capture_misses_ = capture_misses_.load(); prior_render_misses_ = render_misses_.load();
         recovery_stage_ = stage; recovery_hr_ = result; ++recoveries_;
         // Release every old client/service before rebuilding the same route. No
         // processing state or endpoint buffers survive an invalidated session.
         state_ = State::starting;
-        { std::lock_guard lock(setup_mutex_); setup_ = {}; }
+        {
+            std::lock_guard lock(setup_mutex_);
+            setup_ = {}; render_window_ = {};
+            if (slow_render) last_slow_render_ = *slow_render;
+        }
         publish({}); error_ = 0; stage = "reinitialize"; stage_ = stage;
         try {
             std::mutex mutex;

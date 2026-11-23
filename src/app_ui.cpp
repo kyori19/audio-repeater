@@ -185,6 +185,7 @@ struct Window {
         case audio::State::stopped: break;
         }
         const auto& m = s.metrics;
+        const auto& w = s.render_window;
         std::ostringstream row;
         row << now << ',' << state << ',' << s.sessions << ',' << s.recoveries << ',' << s.recovery_stage
             << ',' << utf8(hex(s.recovery_hr)) << ',' << m.capture_misses << ',' << m.render_misses
@@ -192,7 +193,10 @@ struct Window {
             << ',' << m.core.input_frames << ',' << m.core.output_frames << ',' << m.core.generated_frames
             << ',' << m.core.underflows << ',' << m.core.resyncs << ',' << m.core.dropped_frames
             << ',' << m.core.discontinuities << ',' << m.queued_frames << ',' << m.correction_ppm
-            << ',' << s.stage << ',' << utf8(hex(s.error)) << ',' << device_changes << ',' << route_changes << '\n';
+            << ',' << s.stage << ',' << utf8(hex(s.error)) << ',' << device_changes << ',' << route_changes
+            << ',' << w.seconds << ',' << w.input_fps << ',' << w.output_fps << ',' << w.drops << ',' << w.events
+            << ',' << w.mean_gap_ms << ',' << w.max_gap_ms << ',' << w.mean_work_ms << ',' << w.max_work_ms
+            << ',' << w.slow_windows << '\n';
         if (history.size() == 120) history.pop_front();
         history.push_back(row.str());
     }
@@ -201,13 +205,15 @@ struct Window {
         std::ofstream report(path, std::ios::binary | std::ios::trunc);
         report.exceptions(std::ios::badbit | std::ios::failbit);
         SYSTEMTIME utc{}; GetSystemTime(&utc);
-        report << "Audio Repeater Exclusive diagnostics v1\nUTC " << utc.wYear << '-' << utc.wMonth
+        report << "Audio Repeater Exclusive diagnostics v2\nUTC " << utc.wYear << '-' << utc.wMonth
                << '-' << utc.wDay << ' ' << utc.wHour << ':' << utc.wMinute << ':' << utc.wSecond
                << "\ninput_id=" << utf8(input_selection) << "\noutput_id=" << utf8(output_selection) << '\n';
         if (worker) report << utf8(diagnostics(worker->snapshot()));
         report << "\nuptime_ms,state,session,recoveries,last_recovery,recovery_hr,capture_misses,render_misses,"
                   "last_capture_hr,last_render_hr,input_frames,output_frames,generated_frames,underflows,resyncs,"
-                  "dropped_frames,discontinuities,queue_frames,correction_ppm,stage,error_hr,device_changes,route_changes\n";
+                  "dropped_frames,discontinuities,queue_frames,correction_ppm,stage,error_hr,device_changes,route_changes,"
+                  "window_s,input_fps,output_fps,window_drops,render_events,render_gap_ms_avg,render_gap_ms_max,"
+                  "render_work_ms_avg,render_work_ms_max,slow_windows\n";
         for (const auto& row : history) report << row;
         report.close();
     }

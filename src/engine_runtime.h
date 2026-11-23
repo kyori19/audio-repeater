@@ -1,5 +1,5 @@
 #pragma once
-#include "audio_core.h"
+#include "render_monitor.h"
 #include <bit>
 
 #include <atomic>
@@ -39,6 +39,7 @@ enum class State { stopped, starting, running, failed };
 struct Snapshot {
     State state{};
     SetupInfo setup{};
+    RenderWindow render_window{}, last_slow_render{};
     Metrics metrics{}; // approximate low-frequency counters, not an audio clock
     std::int32_t error{};
     const char* stage{"idle"};
@@ -112,6 +113,7 @@ private:
     std::atomic<State> state_{State::stopped};
     mutable std::mutex setup_mutex_;
     SetupInfo setup_{};
+    RenderWindow render_window_{}, last_slow_render_{};
     std::atomic<std::int32_t> error_{};
     std::atomic<const char*> stage_{"idle"};
     std::atomic<std::uint64_t> input_{}, output_{}, consumed_{}, generated_{};
